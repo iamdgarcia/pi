@@ -203,6 +203,64 @@ describe("AgentSession codemode tool", () => {
 		expect(resultText(codemodeResult(harness))).toContain("- Use read to examine files instead of cat or sed.");
 	});
 
+	// #11114
+	it("keeps a deactivated direct tool's declaration hidden in only mode", async () => {
+		const dropper = (pi: ExtensionAPI) => {
+			pi.registerTool({
+				name: "drop_echo",
+				label: "Drop echo",
+				description: "Deactivate echo.",
+				parameters: Type.Object({}),
+				exposure: "model-only",
+				async execute() {
+					pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "echo"));
+					return { content: [{ type: "text", text: "dropped" }], details: {} };
+				},
+			});
+		};
+		const harness = await setup([dropper]);
+		harness.settingsManager.applyOverrides({ codemode: { mode: "only" } });
+		harness.session.setActiveToolsByName(["echo", "drop_echo", "codemode"]);
+
+		const initialTools: string[][] = [];
+		const laterDeltas: string[] = [];
+		const initial = (context: TranscriptContext) => {
+			const system = context.messages.filter((message) => message.role === "system");
+			return ((system[0] as { toolsAdded?: { name: string }[] }).toolsAdded ?? []).map(
+				(tool) => tool.name,
+			);
+		};
+		harness.setResponses([
+			(context: TranscriptContext) => {
+				initialTools.push(initial(context));
+				return fauxAssistantMessage([fauxToolCall("drop_echo", {})], { stopReason: "toolUse" });
+			},
+			(context: TranscriptContext) => {
+				initialTools.push(initial(context));
+				for (const message of context.messages) {
+					if (message.role !== "system" || message === context.messages[0]) continue;
+					const added = ((message as { toolsAdded?: { name: string }[] }).toolsAdded ?? []).map(
+						(tool) => tool.name,
+					);
+					const removed = ((message as { toolsRemoved?: { name: string }[] }).toolsRemoved ?? []).map(
+						(tool) => tool.name,
+					);
+					laterDeltas.push(...added, ...removed);
+				}
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await harness.session.prompt("go");
+
+		// echo's declaration was never sent (hidden, direct, active): deactivating it must not
+		// surface it in request 2's initial tool list, and the removal of a never-declared tool
+		// must be filtered too (#11114).
+		expect(initialTools[0]).not.toContain("echo");
+		expect(initialTools[1]).not.toContain("echo");
+		expect(laterDeltas).not.toContain("echo");
+		expect(initialTools[1]).toContain("drop_echo");
+	});
+
 	it("runs nested calls in parallel and returns only the script result", async () => {
 		const harness = await setup();
 		harness.setResponses([

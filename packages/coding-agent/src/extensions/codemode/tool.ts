@@ -310,7 +310,9 @@ function describeScriptCall(tool: AgentTool<any>): string {
  * - `on`: their descriptions say how scripts call them, and the codemode description
  *   lists only the callable tools without `direct` exposure.
  * - `only`: the codemode description lists every callable tool, and requests leave out the
- *   declarations of active `direct` tools.
+ *   declarations of registered `direct` tools. Hiding every registered `direct` tool (not just the
+ *   active ones) keeps the hidden set stable when an extension deactivates a direct tool mid-run:
+ *   a declaration that was never sent must not surface in a later `toolsAdded` (#11114).
  *
  * Listed tools carry their prompt guidelines, which the system prompt only has for declared tools.
  *
@@ -345,13 +347,14 @@ function prepareCodemodeLoadout(loadout: ToolLoadout, options: CodemodeToolOptio
 		),
 		inlineBudget: options.getInlineBudget?.() ?? DEFAULT_CODEMODE_INLINE_BUDGET,
 	});
-	const declaredNames = new Set(loadout.declared.map((tool) => tool.name));
+	const registeredDirect = loadout.registered.filter((tool) => isDirect(tool)).map((tool) => tool.name);
+	// Hide every registered `direct` tool, not just the declared ones: a tool an extension
+	// deactivates mid-run must keep its declaration hidden, or the initial tool list regains it
+	// and the prompt cache misses (#11114). Extra names are harmless: hidden declarations only
+	// filter tools that were declared, and their stale `toolsRemoved` entries too.
 	return {
 		descriptions,
-		hiddenDeclarations:
-			mode === "only"
-				? callable.filter((tool) => isDirect(tool) && declaredNames.has(tool.name)).map((tool) => tool.name)
-				: [],
+		hiddenDeclarations: mode === "only" ? registeredDirect : [],
 	};
 }
 
